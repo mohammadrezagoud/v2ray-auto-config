@@ -1,0 +1,69 @@
+name: Update V2Ray Config
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # هر 6 ساعت اجرا می‌شود
+  workflow_dispatch:
+
+jobs:
+  update-config:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip
+
+      - name: Install Xray-core
+        run: |
+          bash <(curl -L -s https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)
+      
+      - name: Start cloudflared tunnel and get public URL
+        id: tunnel
+        run: |
+          # دانلود cloudflared (اگر از قبل نصب نشده)
+          wget -O cloudflared.tgz https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.tgz
+          tar -xzf cloudflared.tgz
+          chmod +x cloudflared
+          # اجرای cloudflared به صورت background (در حالت اجرا، cloudflared می‌تواند یک تونل ایجاد کند)
+          # توجه: ممکن است لازم شود از گزینه‌های خاص cloudflared استفاده کنید که بر اساس نیازتان تغییر می‌کند.
+          ./cloudflared tunnel --url http://127.0.0.1:10000 > tunnel.log 2>&1 &
+          sleep 10
+          # استخراج URL عمومی از فایل لوگ
+          TUNNEL_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare.com' tunnel.log | head -n 1)
+          echo "Tunnel URL: $TUNNEL_URL"
+          echo "::set-output name=url::$TUNNEL_URL"
+
+      - name: Generate V2Ray configuration
+        run: |
+          # فرض کنید که برای مثال از VMESS استفاده می‌کنیم
+          # در اینجا متغیرهایی مثل UUID و سایر مقادیر رو تولید می‌کنیم.
+          UUID=$(cat /proc/sys/kernel/random/uuid)
+          cat <<EOF > config.json
+          {
+            "v": "2",
+            "ps": "GitHub-Auto-V2Ray",
+            "add": "$(echo ${{ steps.tunnel.outputs.url }} | sed 's/https:\/\///')",
+            "port": "443",
+            "id": "$UUID",
+            "aid": "0",
+            "net": "ws",
+            "type": "none",
+            "host": "",
+            "path": "/",
+            "tls": "tls"
+          }
+EOF
+          cat config.json
+
+      - name: Commit and push config
+        run: |
+          cp config.json ./config.json
+          git config --global user.email "you@example.com"
+          git config --global user.name "Your Name"
+          git add config.json
+          git commit -m "Auto update config at $(date)"
+          git push
