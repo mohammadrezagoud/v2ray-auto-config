@@ -1,32 +1,67 @@
-{
-  "log": {
-    "loglevel": "warning"
-  },
-  "inbounds": [
-    {
-      "port": 10000,
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "8d1f0f4c-aaaa-bbbb-cccc-123456789abc",
-            "flow": ""
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "ws",
-        "wsSettings": {
-          "path": "/v2ray"
-        }
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "settings": {}
-    }
-  ]
-}
+name: V2Ray Auto Deploy with Cloudflared
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Install cloudflared
+      run: |
+        wget -O cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+        chmod +x cloudflared
+
+    - name: Install Xray-core
+      run: |
+        curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+        unzip xray.zip -d xray
+        chmod +x xray/xray
+
+    - name: Generate UUID and config.json
+      run: |
+        UUID=$(cat /proc/sys/kernel/random/uuid)
+        echo "$UUID" > uuid.txt
+
+        echo '{
+          "log": { "loglevel": "warning" },
+          "inbounds": [{
+            "port": 10000,
+            "protocol": "vless",
+            "settings": {
+              "clients": [{ "id": "'"$UUID"'", "flow": "" }],
+              "decryption": "none"
+            },
+            "streamSettings": {
+              "network": "ws",
+              "wsSettings": { "path": "/v2ray" }
+            }
+          }],
+          "outbounds": [{ "protocol": "freedom" }]
+        }' > config.json
+
+    - name: Run Xray in background
+      run: |
+        nohup ./xray/xray -config config.json &
+
+    - name: Start Cloudflared tunnel
+      run: |
+        sleep 5
+        TUNNEL_URL=$(./cloudflared tunnel --url http://localhost:10000 2>&1 | grep -o 'https://.*trycloudflare.com')
+        echo "$TUNNEL_URL" > tunnel.txt
+        UUID=$(cat uuid.txt)
+        echo "vless://$UUID@${TUNNEL_URL#https://}:443?encryption=none&security=tls&type=ws&host=${TUNNEL_URL#https://}&path=%2fv2ray#GitHub-V2ray" > vless.txt
+
+    - name: Commit config
+      run: |
+        git config --global user.email "github-actions@github.com"
+        git config --global user.name "GitHub Actions"
+        git add vless.txt uuid.txt tunnel.txt
+        git commit -m "Update config"
+        git push || echo "No changes to commit"
